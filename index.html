@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>할 일 관리</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>오늘의 할 일</h1>
+
+    <section class="progress">
+      <div class="progress-text">
+        <span id="progress-count">0 / 0</span>
+        <span id="progress-percent">0%</span>
+      </div>
+      <div class="progress-bar" role="progressbar" aria-label="진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+    </section>
+
+    <form id="todo-form" class="input-area">
+      <input id="todo-input" type="text" placeholder="할 일을 입력하세요" aria-label="할 일">
+      <select id="todo-category" aria-label="카테고리">
+        <option value="work">업무</option>
+        <option value="personal">개인</option>
+        <option value="study">공부</option>
+      </select>
+      <button type="submit">추가</button>
+    </form>
+
+    <nav id="tabs" class="tabs">
+      <button class="tab active" data-filter="all">전체</button>
+      <button class="tab" data-filter="work">업무</button>
+      <button class="tab" data-filter="personal">개인</button>
+      <button class="tab" data-filter="study">공부</button>
+    </nav>
+
+    <ul id="todo-list" class="todo-list"></ul>
+    <p id="empty-message" class="empty" hidden>이 카테고리에는 할 일이 없어요</p>
+
+    <div class="footer">
+      <button id="clear-done" class="clear-done" type="button">완료 항목 삭제</button>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
