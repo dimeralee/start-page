@@ -137,6 +137,11 @@ h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
 .todo-list .delete.armed,.clear-done.armed{background:var(--ink);color:#0A0A0B;border-color:var(--ink)}
 .empty{margin:14px 0;text-align:center;color:var(--muted);font-size:12.5px}
 .todo-foot{display:flex;justify-content:flex-end}
+.sync-panel{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.sync-panel[hidden]{display:none}
+.sync-panel input{min-height:36px;padding:0 12px;border:1px solid rgba(255,255,255,.12);border-radius:10px;background:rgba(255,255,255,.06);color:var(--ink);font:inherit;font-size:13px}
+.sync-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sync-msg{font-size:11.5px;color:var(--muted)}
 
 .todo-main{display:flex;flex-direction:column;gap:10px}
 .todo.show-hist .todo-main{display:none}
@@ -233,7 +238,8 @@ h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
         </nav>
         <ul id="todo-list" class="todo-list"></ul>
         <p id="empty-message" class="empty" hidden>이 카테고리에는 할 일이 없어요</p>
-        <div class="todo-foot"><button id="ics-btn" class="clear-done" type="button" hidden style="margin-right:auto">캘린더로 내보내기</button><button id="clear-done" class="clear-done" type="button">완료 항목 정리</button></div>
+        <div class="todo-foot"><button id="ics-btn" class="clear-done" type="button" hidden style="margin-right:auto">캘린더로 내보내기</button><button id="sync-btn" class="clear-done" type="button" style="margin-right:6px">동기화: 로그인</button><button id="clear-done" class="clear-done" type="button">완료 항목 정리</button></div>
+        <form id="sync-panel" class="sync-panel" hidden><input id="sync-email" type="email" placeholder="이메일" autocomplete="username" aria-label="이메일"><input id="sync-pw" type="password" placeholder="비밀번호 (6자 이상)" autocomplete="current-password" aria-label="비밀번호"><div class="sync-row"><button id="sync-in" type="submit" class="clear-done">로그인</button><button id="sync-up" type="button" class="clear-done">가입</button><button id="sync-out" type="button" class="clear-done" hidden>로그아웃</button><span id="sync-msg" class="sync-msg"></span></div></form>
         </div>
         <div id="hist" class="hist" hidden></div>
       </section>
@@ -270,6 +276,7 @@ h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
   <p class="foot" id="updated"></p>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="calendar.js"></script>
 <script>
 (function(){
@@ -366,7 +373,7 @@ h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
   function shiftDay(d,n){return ymd(Date.parse(d+'T12:00:00+09:00')+n*864e5)}
   function today(){return curDay||real()}
   function yesterday(){return shiftDay(today(),-1)}
-  function setDay(d){curDay=d;try{localStorage.setItem(DAY_KEY,d)}catch(e){}}
+  function setDay(d){curDay=d;try{localStorage.setItem(DAY_KEY,d)}catch(e){}push()}
   function initDay(){
     var v=null;try{v=localStorage.getItem(DAY_KEY)}catch(e){}
     if(!/^\d{4}-\d{2}-\d{2}$/.test(v||'')||v>real())v=real();
@@ -386,7 +393,104 @@ h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
     todos=todos.filter(function(t){return t.date>=cutoff});
     initDay();advance();save();
   }
-  function save(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(todos))}catch(e){}}
+  function save(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(todos))}catch(e){}localVer++;push()}
+
+  /* Phone/PC sync through Supabase. Local copy stays in localStorage; when signed in, every change is pushed and other devices' changes are pulled. */
+  var SB_URL='https://gxjzninvxqibuzejmfqa.supabase.co',SB_KEY='sb_publishable_g4k8r9MxDPZc-__LmKIhdg_m7yuwc36';
+  var sb=null,uid=null,synced={},syncedDay=null,dirty=false,pushing=false,again=false,localVer=0,pullTimer=null;
+  var syncBtn=$('sync-btn'),syncPanel=$('sync-panel'),syncMsg=$('sync-msg'),emailIn=$('sync-email'),pwIn=$('sync-pw');
+  function status(t){syncBtn.textContent=uid?('동기화: '+t):'동기화: 로그인'}
+  function sig(t){return [t.text,t.category,!!t.done,!!t.hidden,t.date].join('|')}
+  function toRow(t){return {id:t.id,text:t.text,category:t.category,done:!!t.done,hidden:!!t.hidden,date:t.date,created_at:t.createdAt||Date.now(),updated_at:new Date().toISOString()}}
+  function fromRow(r){return {id:r.id,text:r.text,category:r.category,done:!!r.done,hidden:!!r.hidden,date:r.date,createdAt:Number(r.created_at)}}
+  async function push(){
+    if(!sb||!uid)return;
+    if(pushing){again=true;return}
+    pushing=true;
+    try{
+      do{
+        again=false;
+        var up=[],cur={},r;
+        todos.forEach(function(t){cur[t.id]=1;if(synced[t.id]!==sig(t))up.push(t)});
+        var del=Object.keys(synced).filter(function(id){return !cur[id]});
+        if(up.length){r=await sb.from('todos').upsert(up.map(toRow));if(r.error)throw r.error;up.forEach(function(t){synced[t.id]=sig(t)})}
+        if(del.length){r=await sb.from('todos').delete().in('id',del);if(r.error)throw r.error;del.forEach(function(id){delete synced[id]})}
+        var dn=today();
+        if(dn!==syncedDay){r=await sb.from('prefs').upsert({user_id:uid,todo_day:dn});if(r.error)throw r.error;syncedDay=dn}
+      }while(again);
+      dirty=false;status('완료');
+    }catch(e){dirty=true;status('실패 · 재시도 대기')}
+    pushing=false;
+  }
+  async function pull(){
+    if(!sb||!uid||pushing)return;
+    if(dirty){await push();if(dirty)return}
+    var v=localVer;
+    var r=await sb.from('todos').select('*'),rp=await sb.from('prefs').select('todo_day').maybeSingle();
+    if(r.error){status('불러오기 실패');return}
+    if(pushing||dirty||v!==localVer||editingId)return;
+    var cutoff=ymd(Date.now()-KEEP_DAYS*864e5);
+    var remote=r.data.map(fromRow).filter(function(t){return isValid(t)&&t.date>=cutoff});
+    remote.sort(function(a,b){return a.createdAt-b.createdAt});
+    var rd=rp&&rp.data&&rp.data.todo_day;
+    var newDay=(/^\d{4}-\d{2}-\d{2}$/.test(rd||'')&&rd<=real())?rd:today();
+    var oldKey=JSON.stringify(todos.map(sig))+today();
+    var newKey=JSON.stringify(remote.map(sig))+newDay;
+    synced={};remote.forEach(function(t){synced[t.id]=sig(t)});
+    syncedDay=newDay;
+    if(oldKey!==newKey){
+      todos=remote;
+      try{localStorage.setItem(STORAGE_KEY,JSON.stringify(todos))}catch(e){}
+      curDay=newDay;try{localStorage.setItem(DAY_KEY,newDay)}catch(e){}
+      render();
+    }
+    status('완료');
+  }
+  function schedulePull(){clearTimeout(pullTimer);pullTimer=setTimeout(pull,400)}
+  async function firstUpload(){
+    var flag='sbMigrated_'+uid;
+    try{if(localStorage.getItem(flag))return}catch(e){}
+    var r=await sb.from('todos').select('id');if(r.error)throw r.error;
+    var have={};r.data.forEach(function(x){have[x.id]=1});
+    var mine=todos.filter(function(t){return !have[t.id]});
+    if(mine.length){var u=await sb.from('todos').upsert(mine.map(toRow));if(u.error)throw u.error}
+    var rp=await sb.from('prefs').select('todo_day').maybeSingle();
+    if(!(rp.data&&rp.data.todo_day)){var d=await sb.from('prefs').upsert({user_id:uid,todo_day:today()});if(d.error)throw d.error}
+    try{localStorage.setItem(flag,'1')}catch(e){}
+  }
+  async function signedIn(user){
+    uid=user.id;emailIn.value=user.email||'';
+    $('sync-in').hidden=$('sync-up').hidden=true;$('sync-out').hidden=false;pwIn.hidden=emailIn.hidden=true;
+    syncMsg.textContent=(user.email||'')+' 로그인됨';status('연결 중');
+    try{await firstUpload();await pull()}catch(e){status('실패 · 재시도 대기');dirty=true}
+    try{sb.channel('todos-sync').on('postgres_changes',{event:'*',schema:'public',table:'todos'},schedulePull).subscribe()}catch(e){}
+  }
+  function signedOut(){
+    uid=null;synced={};syncedDay=null;
+    $('sync-in').hidden=$('sync-up').hidden=false;$('sync-out').hidden=true;pwIn.hidden=emailIn.hidden=false;pwIn.value='';
+    syncMsg.textContent='';status('');
+  }
+  async function auth(kind){
+    var em=emailIn.value.trim(),pw=pwIn.value;
+    if(!em||pw.length<6){syncMsg.textContent='이메일과 6자 이상 비밀번호를 입력하세요';return}
+    syncMsg.textContent='처리 중…';
+    var r=kind==='up'?await sb.auth.signUp({email:em,password:pw}):await sb.auth.signInWithPassword({email:em,password:pw});
+    if(r.error){syncMsg.textContent=r.error.message;return}
+    if(!r.data.session){syncMsg.textContent='가입됨. 이메일 확인이 필요합니다';return}
+    pwIn.value='';await signedIn(r.data.session.user);
+  }
+  function initSync(){
+    if(!window.supabase){syncBtn.hidden=true;return}
+    try{sb=window.supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:true,autoRefreshToken:true}})}catch(e){syncBtn.hidden=true;return}
+    syncBtn.addEventListener('click',function(){syncPanel.hidden=!syncPanel.hidden;if(!syncPanel.hidden&&!uid)emailIn.focus()});
+    syncPanel.addEventListener('submit',function(e){e.preventDefault();auth('in')});
+    $('sync-up').addEventListener('click',function(){auth('up')});
+    $('sync-out').addEventListener('click',async function(){await sb.auth.signOut();signedOut()});
+    sb.auth.getSession().then(function(r){if(r.data&&r.data.session)signedIn(r.data.session.user)});
+    window.addEventListener('focus',schedulePull);
+    document.addEventListener('visibilitychange',function(){if(!document.hidden)schedulePull()});
+    setInterval(function(){if(!document.hidden)pull()},60000);
+  }
   function mk(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
   var view='today';
   function tomorrow(){return shiftDay(today(),1)}
@@ -550,7 +654,7 @@ h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
   document.querySelector('.seg').addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;view=b.dataset.view;editingId=null;pendingDelete=null;render()});
   var icsBtn=$('ics-btn'),icsTimer=null;
   function icsEsc(t){return String(t).replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n')}
-  function fold(l){var o='';while(l.length>24){o+=l.slice(0,24)+'\r\n ';l=l.slice(70)}return o+l}
+  function fold(l){var o='';while(l.length>24){o+=l.slice(0,24)+'\r\n ';l=l.slice(24)}return o+l}
   icsBtn.addEventListener('click',function(){
     var d=tomorrow(),items=todos.filter(function(t){return t.date===d&&!t.hidden&&!t.done});
     clearTimeout(icsTimer);
@@ -602,7 +706,7 @@ h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
   function dayCheck(){advance();var k=today()+'|'+real();if(k!==lastKey){lastKey=k;editingId=null;render()}}
   setInterval(dayCheck,60000);window.addEventListener('focus',dayCheck);document.addEventListener('visibilitychange',dayCheck);
 
-  load();lastKey=today()+'|'+real();render();
+  load();lastKey=today()+'|'+real();render();initSync();
 })();
 
 /* News headlines. 오마이뉴스 is read directly; 한겨레·노컷뉴스·뉴스타파 go through the free rss2json converter; MBC has no readable feed, so it links out. Last good result is kept in localStorage. */
